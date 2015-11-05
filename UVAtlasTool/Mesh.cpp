@@ -18,6 +18,13 @@
 #include <DirectXPackedVector.h>
 #include <DirectXCollision.h>
 #include <UVAtlas.h>
+#include <locale>
+#include <codecvt>
+#include <vector>
+#include <map>
+#include <assimp/scene.h>
+#include <assimp/mesh.h>
+#include <assimp/Exporter.hpp>
 
 using namespace DirectX;
 
@@ -2600,4 +2607,154 @@ HRESULT Mesh::ExportToSDKMESH(const wchar_t* szFileName, size_t nMaterials, cons
     }
 
     return S_OK;
+}
+
+_Use_decl_annotations_
+HRESULT Mesh::ExportToAssimp(const wchar_t* szFileName, _In_ size_t nMaterials, _In_reads_opt_(nMaterials) const Material* materials) const
+{
+	if (!szFileName)
+		return E_INVALIDARG;
+
+	if (nMaterials > 0 && !materials)
+		return E_INVALIDARG;
+
+	if (!mnFaces || !mIndices || !mnVerts || !mPositions || !mTexCoords)
+		return E_UNEXPECTED;
+
+	if ((uint64_t(mnFaces) * 3) >= UINT32_MAX)
+		return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
+
+	if (mnVerts >= UINT16_MAX)
+		return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+
+	std::wstring_convert<std::codecvt_utf8<wchar_t>> codecvt;
+
+	// aiScene instance as the root of output data structure
+	aiScene scene;
+	
+	// Write materials
+	static const Mesh::Material s_defMaterial = { L"default", false, 1.f, 1.f,
+		XMFLOAT3(0.2f, 0.2f, 0.2f), XMFLOAT3(0.8f, 0.8f, 0.8f),
+		XMFLOAT3(0.f, 0.f, 0.f), XMFLOAT3(0.f, 0.f, 0.f), L"" };
+	if (nMaterials == 0)
+	{
+		nMaterials = 1;
+		materials = &s_defMaterial;
+	}
+	scene.mNumMaterials = nMaterials;
+	scene.mMaterials = new aiMaterial*[nMaterials];
+	for (int j = 0; j < nMaterials; ++j)
+	{
+		aiMaterial *mat = new aiMaterial;
+		aiString name(codecvt.to_bytes(materials[j].name));
+		mat->AddProperty(&name, AI_MATKEY_NAME);
+
+		// TODO: what is perVertexColor, specularPower
+		mat->AddBinaryProperty(&materials[j].alpha, sizeof(float), AI_MATKEY_OPACITY, aiPTI_Float);
+		mat->AddBinaryProperty(&materials[j].ambientColor, sizeof(float)* 3, AI_MATKEY_COLOR_AMBIENT, aiPTI_Float);
+		mat->AddBinaryProperty(&materials[j].diffuseColor, sizeof(float)* 3, AI_MATKEY_COLOR_DIFFUSE, aiPTI_Float);
+		mat->AddBinaryProperty(&materials[j].specularColor, sizeof(float)* 3, AI_MATKEY_COLOR_SPECULAR, aiPTI_Float);
+		mat->AddBinaryProperty(&materials[j].emissiveColor, sizeof(float)* 3, AI_MATKEY_COLOR_EMISSIVE, aiPTI_Float);
+
+		aiString texture(codecvt.to_bytes(materials[j].texture));
+		mat->AddProperty(&texture, AI_MATKEY_TEXTURE(aiTextureType_DIFFUSE, j));
+
+		scene.mMaterials[j] = mat;
+	}
+
+	auto subsets = ComputeSubsets(mAttributes.get(), mnFaces);
+	UINT n = static_cast<UINT>(subsets.size());
+
+	scene.mNumMeshes = n;
+	scene.mMeshes = new aiMesh*[n];
+	scene.mRootNode = new aiNode("root");
+	scene.mRootNode->mNumMeshes = n;
+	scene.mRootNode->mMeshes = new unsigned int[n];
+
+	size_t startIndex = 0;
+	for (auto it = subsets.cbegin(); it != subsets.end(); ++it)
+	{
+		aiMesh *mesh = new aiMesh;
+		size_t nFaces = it->second;
+
+		std::vector<size_t> vertexId;
+		std::map<size_t, size_t> vertexIdMap;
+		for (int f = startIndex; f < startIndex + nFaces; ++f)
+		{
+			for (int k = 0; k < 3; ++k)
+			{
+				int vid = mIndices[3 * f + k];
+				if (vertexIdMap.find(vid) == vertexIdMap.end())
+				{
+					vertexIdMap.emplace(vid, vertexId.size());
+					vertexId.push_back(vid);
+				}
+			}
+		}
+
+		size_t nVertex = vertexIdMap.size();
+
+		mesh->mNumVertices = static_cast<uint32_t>(nVertex);
+		mesh->mNumFaces = static_cast<uint32_t>(nFaces);
+		mesh->mVertices = new aiVector3D[mesh->mNumVertices];
+		if (mNormals)
+			mesh->mNormals = new aiVector3D[mesh->mNumVertices];
+		mesh->mNumUVComponents[0] = 2;
+		mesh->mTextureCoords[0] = new aiVector3D[mesh->mNumVertices];
+		mesh->mFaces = new aiFace[mesh->mNumFaces];
+
+		if (!mesh->mVertices || !mesh->mFaces)
+			return E_OUTOFMEMORY;
+
+		// Copy to vertex buffer
+		for (size_t j = 0; j < nVertex; ++j)
+		{
+			mesh->mVertices[j].x = mPositions[vertexId[j]].x;
+			mesh->mVertices[j].y = mPositions[vertexId[j]].y;
+			mesh->mVertices[j].z = mPositions[vertexId[j]].z;
+			if (mNormals)
+			{
+				mesh->mNormals[j].x = mNormals[vertexId[j]].x;
+				mesh->mNormals[j].y = mNormals[vertexId[j]].y;
+				mesh->mNormals[j].z = mNormals[vertexId[j]].z;
+			}
+			mesh->mTextureCoords[0][j].x = mTexCoords[vertexId[j]].x;
+			mesh->mTextureCoords[0][j].y = mTexCoords[vertexId[j]].y;
+		}
+
+		// Copy to face buffer
+		for (size_t j = 0; j < nFaces; ++j)
+		{
+			mesh->mFaces[j].mNumIndices = 3;
+			mesh->mFaces[j].mIndices = new unsigned int[3];
+			for (int k = 0; k < 3; ++k)
+				mesh->mFaces[j].mIndices[k] = vertexIdMap[mIndices[(startIndex + j) * 3 + k]];
+		}
+
+		scene.mMeshes[std::distance(subsets.cbegin(), it)] = mesh;
+		scene.mRootNode->mMeshes[std::distance(subsets.cbegin(), it)] = std::distance(subsets.cbegin(), it);
+		startIndex += nFaces;
+	}
+
+	Assimp::Exporter exporter;
+
+	std::string fn(codecvt.to_bytes(szFileName));
+	std::string ext(fn.substr(fn.find_last_of(".") + 1));
+	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+	int formatId;
+	const aiExportFormatDesc *desc;
+	for (formatId = 0; formatId < exporter.GetExportFormatCount(); ++formatId)
+	{
+		desc = exporter.GetExportFormatDescription(formatId);
+		if (ext == desc->fileExtension)
+			break;
+	}
+
+	if (formatId == exporter.GetExportFormatCount())
+		return E_FAIL;
+
+	exporter.Export(&scene, desc->id, fn);
+
+	return S_OK;
 }

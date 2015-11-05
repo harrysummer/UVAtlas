@@ -880,7 +880,7 @@ int __cdecl wmain(_In_ int argc, _In_z_count_(argc) wchar_t* argv[])
                         signalStride = sizeof(XMFLOAT2);
                     }
                     break;
-                }
+				}
 
                 if (!pSignal)
                 {
@@ -1073,18 +1073,22 @@ int __cdecl wmain(_In_ int argc, _In_z_count_(argc) wchar_t* argv[])
         }
         else
         {
-            if (dwOptions & (1 << OPT_VBO))
+			if (dwOptions & (1 << OPT_SDKMESH))
             {
-                wcscpy_s(outputExt, L".vbo");
+                wcscpy_s(outputExt, L".sdkmesh");
             }
+			else if (dwOptions & (1 << OPT_VBO))
+			{
+				wcscpy_s(outputExt, L".vbo");
+			}
             else if (dwOptions & (1 << OPT_CMO))
             {
                 wcscpy_s(outputExt, L".cmo");
             }
-            else
-            {
-                wcscpy_s(outputExt, L".sdkmesh");
-            }
+			else
+			{
+				wcscpy_s(outputExt, L".obj");
+			}
 
             WCHAR outFilename[ _MAX_FNAME ] = { 0 };
             wcscpy_s( outFilename, fname );
@@ -1137,16 +1141,10 @@ int __cdecl wmain(_In_ int argc, _In_z_count_(argc) wchar_t* argv[])
 
             hr = inMesh->ExportToCMO(outputPath, inMaterial.size(), inMaterial.empty() ? nullptr : inMaterial.data());
         }
-        else if ( !_wcsicmp(outputExt, L".x") )
-        {
-            wprintf(L"\nERROR: Legacy Microsoft X files not supported\n");
-            return 1;
-        }
-        else
-        {
-            wprintf(L"\nERROR: Unknown output file type '%ls'\n", outputExt);
-            return 1;
-        }
+		else
+		{
+			hr = inMesh->ExportToAssimp(outputPath, inMaterial.size(), inMaterial.empty() ? nullptr : inMaterial.data());
+		}
 
         if (FAILED(hr))
         {
@@ -1184,6 +1182,10 @@ int __cdecl wmain(_In_ int argc, _In_z_count_(argc) wchar_t* argv[])
             {
                 hr = inMesh->ExportToCMO(outputPath, inMaterial.size(), inMaterial.empty() ? nullptr : inMaterial.data());
             }
+			else
+			{
+				hr = inMesh->ExportToAssimp(outputPath, inMaterial.size(), inMaterial.empty() ? nullptr : inMaterial.data());
+			}
             if (FAILED(hr))
             {
                 wprintf(L"\nERROR: Failed uv mesh write (%08X):-> '%ls'\n", hr, outputPath);
