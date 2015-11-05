@@ -112,6 +112,7 @@ public:
 
     // Create mesh from file
     static HRESULT CreateFromVBO( _In_z_ const wchar_t* szFileName, _Inout_ std::unique_ptr<Mesh>& result );
+	static HRESULT CreateFromAssimp(_In_z_ const wchar_t* szFileName, _Inout_ std::vector<Mesh::Material>& inMaterial, _Inout_ std::unique_ptr<Mesh>& result);
 
 private:
     size_t                                      mnFaces;

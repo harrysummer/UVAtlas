@@ -24,6 +24,8 @@
 #include <map>
 #include <assimp/scene.h>
 #include <assimp/mesh.h>
+#include <assimp/postprocess.h>
+#include <assimp/Importer.hpp>
 #include <assimp/Exporter.hpp>
 
 using namespace DirectX;
@@ -1287,6 +1289,147 @@ HRESULT Mesh::CreateFromVBO( const wchar_t* szFileName, std::unique_ptr<Mesh>& r
     return S_OK;
 }
 
+_Use_decl_annotations_
+HRESULT Mesh::CreateFromAssimp(const wchar_t* szFileName, std::vector<Mesh::Material>& inMaterial, std::unique_ptr<Mesh>& result)
+{
+	std::wstring_convert<std::codecvt_utf8<wchar_t>> codecvt;
+	std::string fn(codecvt.to_bytes(szFileName));
+
+	Assimp::Importer importer;
+	const aiScene *scene(importer.ReadFile(fn, aiProcess_Triangulate));
+
+	if (scene == nullptr || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE))
+		return E_FAIL;
+
+	if (!scene->mRootNode || !scene->HasMaterials() || !scene->HasMeshes())
+		return E_FAIL;
+
+	std::function<std::pair<size_t,size_t>(const aiNode*)> getNumVertAndFace = [&getNumVertAndFace, &scene](const aiNode *node) -> std::pair<size_t, size_t>
+	{
+		size_t nVert = 0;
+		size_t nFace = 0;
+		for (int j = 0; j < node->mNumMeshes; ++j)
+		{
+			nVert += scene->mMeshes[node->mMeshes[j]]->mNumVertices;
+			nFace += scene->mMeshes[node->mMeshes[j]]->mNumFaces;
+		}
+		for (int j = 0; j < node->mNumChildren; ++j)
+		{
+			auto count = getNumVertAndFace(node->mChildren[j]);
+			nVert += count.first;
+			nFace += count.second;
+		}
+		return std::pair<size_t,size_t>(nVert, nFace);
+	};
+
+	std::pair<size_t, size_t> count = getNumVertAndFace(scene->mRootNode);
+	int numVertices = count.first;
+	int numFaces = count.second;
+
+	// Read vertex-related fields
+	std::unique_ptr<XMFLOAT3[]> pos(new (std::nothrow) XMFLOAT3[numVertices]);
+	std::unique_ptr<XMFLOAT3[]> norm(new (std::nothrow) XMFLOAT3[numVertices]);
+	std::unique_ptr<XMFLOAT2[]> texcoord(new (std::nothrow) XMFLOAT2[numVertices]);
+
+	int currentIndex = 0;
+	std::function<void(const aiNode*, aiMatrix4x4)> readVertexData = [&readVertexData, &scene, &pos, &norm, &texcoord, &currentIndex](const aiNode *node, aiMatrix4x4 parentMat)
+	{
+		aiMatrix4x4 trans(parentMat);
+		trans *= node->mTransformation;
+
+		for (int j = 0; j < node->mNumMeshes; ++j)
+		{
+			aiMesh *mesh = scene->mMeshes[node->mMeshes[j]];
+			for (size_t v = 0; v < mesh->mNumVertices; ++v)
+			{
+				aiVector3D p(trans * mesh->mVertices[v]);
+				pos[currentIndex].x = p.x;
+				pos[currentIndex].y = p.y;
+				pos[currentIndex].z = p.z;
+				if (mesh->HasNormals())
+				{
+					aiVector3D n(trans * mesh->mNormals[v]);
+					norm[currentIndex].x = n.x;
+					norm[currentIndex].y = n.y;
+					norm[currentIndex].z = n.z;
+				}
+				if (mesh->HasTextureCoords(0))
+				{
+					texcoord[currentIndex].x = mesh->mTextureCoords[0][v].x;
+					texcoord[currentIndex].y = mesh->mTextureCoords[0][v].y;
+				}
+				currentIndex++;
+			}
+		}
+		for (int j = 0; j < node->mNumChildren; ++j)
+		{
+			readVertexData(node->mChildren[j], trans);
+		}
+	};
+	readVertexData(scene->mRootNode, aiMatrix4x4());
+
+	// Read face-related fields
+	std::unique_ptr<uint32_t[]> indices(new (std::nothrow) uint32_t[numFaces * 3]);
+	std::unique_ptr<uint32_t[]> attrs(new (std::nothrow) uint32_t[numFaces]);
+
+	int currentVertexIndex = 0;
+	int currentFaceIndex = 0;
+	std::function<void(const aiNode*)> readFaceData = [&readFaceData, &scene, &indices, &attrs, &currentVertexIndex, &currentFaceIndex](const aiNode *node)
+	{
+		for (int j = 0; j < node->mNumMeshes; ++j)
+		{
+			aiMesh *mesh = scene->mMeshes[node->mMeshes[j]];
+			for (int f = 0; f < mesh->mNumFaces; ++f)
+			{
+				for (int k = 0; k < 3; ++k)
+				{
+					indices[currentFaceIndex * 3 + k] = currentVertexIndex + mesh->mFaces[f].mIndices[k];
+				}
+				attrs[currentFaceIndex] = mesh->mMaterialIndex;
+				currentFaceIndex++;
+			}
+			currentVertexIndex += mesh->mNumVertices;
+		}
+		for (int j = 0; j < node->mNumChildren; ++j)
+		{
+			readFaceData(node->mChildren[j]);
+		}
+	};
+	readFaceData(scene->mRootNode);
+
+	// Read material
+	unsigned int one = 1, three = 3;
+	inMaterial.resize(scene->mNumMaterials);
+	for (size_t j = 0; j < inMaterial.size(); ++j)
+	{
+		Mesh::Material &mat = inMaterial[j];
+		aiMaterial *aiMat = scene->mMaterials[j];
+		std::string name;
+		aiMat->Get(AI_MATKEY_NAME, name);
+		if (name.empty() || name.length() == 1 && name[0] == '\xf')
+			name = "triangleMesh_" + std::to_string(j);
+		mat.name = codecvt.from_bytes(name);
+		aiMat->Get(AI_MATKEY_OPACITY, &mat.alpha, &one);
+		aiMat->Get(AI_MATKEY_COLOR_SPECULAR, (float *)&mat.specularColor, &three);
+		aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, (float *)&mat.diffuseColor, &three);
+		aiMat->Get(AI_MATKEY_COLOR_AMBIENT, (float *)&mat.ambientColor, &three);
+		aiMat->Get(AI_MATKEY_COLOR_EMISSIVE, (float *)&mat.emissiveColor, &three);
+	}
+
+	result.reset(new (std::nothrow) Mesh);
+	if (!result)
+		return E_OUTOFMEMORY;
+
+	result->mPositions.swap(pos);
+	result->mNormals.swap(norm);
+	result->mTexCoords.swap(texcoord);
+	result->mIndices.swap(indices);
+	result->mAttributes.swap(attrs);
+	result->mnVerts = numVertices;
+	result->mnFaces = numFaces;
+
+	return S_OK;
+}
 
 //======================================================================================
 // Visual Studio CMO
@@ -2668,8 +2811,8 @@ HRESULT Mesh::ExportToAssimp(const wchar_t* szFileName, _In_ size_t nMaterials, 
 	scene.mNumMeshes = n;
 	scene.mMeshes = new aiMesh*[n];
 	scene.mRootNode = new aiNode("root");
-	scene.mRootNode->mNumMeshes = n;
-	scene.mRootNode->mMeshes = new unsigned int[n];
+	scene.mRootNode->mNumChildren = n;
+	scene.mRootNode->mChildren = new aiNode*[n];
 
 	size_t startIndex = 0;
 	for (auto it = subsets.cbegin(); it != subsets.end(); ++it)
@@ -2702,6 +2845,10 @@ HRESULT Mesh::ExportToAssimp(const wchar_t* szFileName, _In_ size_t nMaterials, 
 		mesh->mNumUVComponents[0] = 2;
 		mesh->mTextureCoords[0] = new aiVector3D[mesh->mNumVertices];
 		mesh->mFaces = new aiFace[mesh->mNumFaces];
+		if (mAttributes)
+			mesh->mMaterialIndex = mAttributes[startIndex];
+		else
+			mesh->mMaterialIndex = 0;
 
 		if (!mesh->mVertices || !mesh->mFaces)
 			return E_OUTOFMEMORY;
@@ -2732,7 +2879,15 @@ HRESULT Mesh::ExportToAssimp(const wchar_t* szFileName, _In_ size_t nMaterials, 
 		}
 
 		scene.mMeshes[std::distance(subsets.cbegin(), it)] = mesh;
-		scene.mRootNode->mMeshes[std::distance(subsets.cbegin(), it)] = std::distance(subsets.cbegin(), it);
+
+		std::string name;
+		scene.mMaterials[mesh->mMaterialIndex]->Get(AI_MATKEY_NAME, name);
+		aiNode *node = new aiNode(name);
+		node->mNumMeshes = 1;
+		node->mMeshes = new unsigned int[1];
+		node->mMeshes[0] = std::distance(subsets.cbegin(), it);
+		scene.mRootNode->mChildren[std::distance(subsets.cbegin(), it)] = node;
+
 		startIndex += nFaces;
 	}
 

@@ -646,14 +646,9 @@ int __cdecl wmain(_In_ int argc, _In_z_count_(argc) wchar_t* argv[])
             wprintf(L"\nERROR: Importing Visual Studio CMO files not supported\n");
             return 1;
         }
-        else if ( _wcsicmp( ext, L".x" ) == 0 )
-        {
-            wprintf( L"\nERROR: Legacy Microsoft X files not supported\n");
-            return 1;
-        }
         else
         {
-            hr = LoadFromOBJ(pConv->szSrc, inMesh, inMaterial, dwOptions);
+			hr = Mesh::CreateFromAssimp(pConv->szSrc, inMaterial, inMesh);
         }
         if (FAILED(hr))
         {
