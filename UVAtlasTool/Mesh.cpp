@@ -1296,7 +1296,7 @@ HRESULT Mesh::CreateFromAssimp(const wchar_t* szFileName, std::vector<Mesh::Mate
 	std::string fn(codecvt.to_bytes(szFileName));
 
 	Assimp::Importer importer;
-	const aiScene *scene(importer.ReadFile(fn, aiProcess_Triangulate));
+	const aiScene *scene(importer.ReadFile(fn, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices));
 
 	if (scene == nullptr || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE))
 		return E_FAIL;
@@ -2764,12 +2764,6 @@ HRESULT Mesh::ExportToAssimp(const wchar_t* szFileName, _In_ size_t nMaterials, 
 	if (!mnFaces || !mIndices || !mnVerts || !mPositions || !mTexCoords)
 		return E_UNEXPECTED;
 
-	if ((uint64_t(mnFaces) * 3) >= UINT32_MAX)
-		return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
-
-	if (mnVerts >= UINT16_MAX)
-		return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
-
 	std::wstring_convert<std::codecvt_utf8<wchar_t>> codecvt;
 
 	// aiScene instance as the root of output data structure
@@ -2909,7 +2903,7 @@ HRESULT Mesh::ExportToAssimp(const wchar_t* szFileName, _In_ size_t nMaterials, 
 	if (formatId == exporter.GetExportFormatCount())
 		return E_FAIL;
 
-	exporter.Export(&scene, desc->id, fn);
+	exporter.Export(&scene, desc->id, fn, aiProcess_FindDegenerates | aiProcess_FindInvalidData);
 
 	return S_OK;
 }
