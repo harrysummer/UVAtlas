@@ -2903,7 +2903,7 @@ HRESULT Mesh::ExportToAssimp(const wchar_t* szFileName, _In_ size_t nMaterials, 
 	if (formatId == exporter.GetExportFormatCount())
 		return E_FAIL;
 
-	exporter.Export(&scene, desc->id, fn, aiProcess_FindDegenerates | aiProcess_FindInvalidData);
+	exporter.Export(&scene, desc->id, fn, aiProcess_FindDegenerates | aiProcess_FindInvalidData | aiProcess_JoinIdenticalVertices);
 
 	return S_OK;
 }
